@@ -164,16 +164,16 @@ dialog::backdrop{background:#000a}
 
 <!-- Goal entry -->
 <dialog id="goal-dialog">
-  <form id="goal-form" method="dialog">
+  <form id="goal-form" method="dialog" novalidate>
     <h2 id="g-title">Goal</h2>
-    <label><span>Player number (blank if unknown)</span>
-      <input id="g-number" type="number" inputmode="numeric" min="0" max="99" autocomplete="off"></label>
     <div class="grid2">
-      <label><span>Quarter</span>
-        <select id="g-quarter"></select></label>
-      <label><span>Time on scoreboard (m:ss)</span>
-        <input id="g-time" placeholder="4:32" autocomplete="off" required></label>
+      <label><span>Player number (2 digits)</span>
+        <input id="g-number" inputmode="numeric" maxlength="2" placeholder="02" autocomplete="off"></label>
+      <label><span>Scoreboard time (mmss)</span>
+        <input id="g-time" inputmode="numeric" maxlength="4" placeholder="0432" autocomplete="off">
+        <span id="g-time-preview" class="sub"></span></label>
     </div>
+    <p class="sub" id="g-quarter-note"></p>
     <p class="err" id="g-error"></p>
     <div class="row" style="justify-content:flex-end">
       <button type="button" id="g-cancel" class="ghost">Cancel</button>
@@ -217,28 +217,20 @@ const mmss = s => {
   s = Math.max(0, Math.floor(s));
   return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
 };
-function parseTime(str) {
-  str = str.trim();
-  if (!str) return null;
-  let secs;
-  if (str.includes(':')) {
-    const [m, s] = str.split(':');
-    if (!/^\d+$/.test(m) || !/^\d{1,2}$/.test(s) || +s > 59) return null;
-    secs = +m * 60 + +s;
-  } else if (/^\d+$/.test(str)) {
-    secs = +str;
-  } else return null;
+// Goal time is typed as four digits, mmss: "0432" = 4:32. Returns seconds, or null if invalid.
+function goalTimeSecs(digits) {
+  if (!/^\d{4}$/.test(digits)) return null;
+  const m = +digits.slice(0, 2);
+  const s = +digits.slice(2);
+  if (s > 59) return null;
+  const secs = m * 60 + s;
   return secs < quarterLen() ? secs : null;
 }
 
 // ---------- rendering ----------
 const colourDot = c => CSS.supports('color', c) ? c : '#888';
 const quarterSel = $('#quarter');
-const gQuarterSel = $('#g-quarter');
-for (let q = 1; q <= QUARTERS; q++) {
-  quarterSel.add(new Option('Quarter ' + q, q));
-  gQuarterSel.add(new Option('Quarter ' + q, q));
-}
+for (let q = 1; q <= QUARTERS; q++) quarterSel.add(new Option('Quarter ' + q, q));
 quarterSel.addEventListener('change', () => {
   state.quarter = +quarterSel.value;
   save();
@@ -297,38 +289,60 @@ function renderAll() {
 // ---------- goal entry ----------
 const dlg = $('#goal-dialog');
 
+const numIn = $('#g-number');
+const timeIn = $('#g-time');
+
 function openGoal(side) {
-  const form = $('#goal-form');
-  form.dataset.team = side;
+  $('#goal-form').dataset.team = side;
   $('#g-title').textContent = `${state.teams[side].colour} goal (${state.teams[side].code})`;
-  $('#g-number').value = '';
-  $('#g-quarter').value = state.quarter;
-  $('#g-time').value = '';
+  numIn.value = '';
+  timeIn.value = '';
+  $('#g-time-preview').textContent = '';
   $('#g-error').textContent = '';
+  $('#g-quarter-note').textContent = `Quarter ${state.quarter} (change it on the main page)`;
   dlg.showModal();
-  setTimeout(() => $('#g-number').focus(), 50);
+  setTimeout(() => numIn.focus(), 50);
 }
 
 $('#g-cancel').addEventListener('click', () => dlg.close());
 
+// Digits only in both fields.
+[numIn, timeIn].forEach(el => el.addEventListener('input', () => {
+  el.value = el.value.replace(/\D/g, '');
+}));
+
+// Second player digit jumps to the time field.
+numIn.addEventListener('input', () => {
+  if (numIn.value.length === 2) timeIn.focus();
+});
+
+// Fourth time digit saves the goal straight away.
+timeIn.addEventListener('input', () => {
+  const secs = timeIn.value.length === 4 ? goalTimeSecs(timeIn.value) : null;
+  $('#g-time-preview').textContent = timeIn.value.length === 4
+    ? (secs === null ? 'Not a valid time' : 'Time ' + mmss(secs))
+    : '';
+  if (timeIn.value.length === 4) $('#goal-form').requestSubmit();
+});
+
 $('#goal-form').addEventListener('submit', ev => {
   ev.preventDefault();
-  const numRaw = $('#g-number').value.trim();
-  const number = numRaw === '' ? null : parseInt(numRaw, 10);
-  if (number !== null && !(number >= 0 && number <= 99)) {
-    $('#g-error').textContent = 'Number must be 0–99, or blank if unknown.';
+  if (!/^\d{2}$/.test(numIn.value)) {
+    $('#g-error').textContent = 'Player number must be 2 digits, e.g. 02.';
+    numIn.focus();
     return;
   }
-  const secs = parseTime($('#g-time').value);
+  const secs = goalTimeSecs(timeIn.value);
   if (secs === null) {
-    $('#g-error').textContent = `Enter the scoreboard time as m:ss, from 0:00 to ${mmss(quarterLen() - 1)}.`;
+    $('#g-error').textContent = 'Time must be 4 digits mmss, e.g. 0432.';
+    timeIn.focus();
     return;
   }
   state.goals.push({
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
     team: $('#goal-form').dataset.team,
-    number,
-    quarter: parseInt($('#g-quarter').value, 10),
+    number: parseInt(numIn.value, 10),
+    quarter: state.quarter,
     secs,
     created: Date.now()
   });
