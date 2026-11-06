@@ -27,8 +27,7 @@ main{max-width:720px;margin:0 auto;padding:4% 4% 40px}
 .team{display:flex;align-items:center;justify-content:center;gap:6px;font-weight:700;letter-spacing:.08em;font-size:15px}
 .dot{display:inline-block;width:12px;height:12px;border-radius:50%;border:1px solid var(--line)}
 .score{font-size:clamp(40px,16vw,64px);font-weight:700;font-variant-numeric:tabular-nums;line-height:1.1}
-.mid{display:flex;flex-direction:column;align-items:center;gap:4px}
-.mid{min-width:0}
+.mid{display:flex;flex-direction:column;align-items:center;gap:4px;min-width:0}
 .mid select{width:100%;text-align:center;padding:8px 4px}
 
 button{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;cursor:pointer}
@@ -51,6 +50,7 @@ label{display:block;margin-bottom:10px}
 label span{display:block;color:var(--dim);font-size:12px;margin-bottom:4px}
 input,select{width:100%;padding:9px 10px;font-size:16px;border-radius:8px;border:1px solid var(--line);background:var(--bg);outline:none}
 input:focus,select:focus{border-color:var(--accent)}
+input::placeholder{color:var(--dim);letter-spacing:.2em}
 input.code{text-transform:uppercase;letter-spacing:.2em;max-width:140px}
 h2{font-size:15px;margin:0 0 10px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
@@ -169,12 +169,17 @@ dialog::backdrop{background:#000a}
   <form id="goal-form" method="dialog" novalidate>
     <h2 id="g-title">Goal</h2>
     <div class="grid2">
-      <label><span>Player number (2 digits)</span>
-        <input id="g-number" inputmode="numeric" maxlength="2" placeholder="02" autocomplete="off"></label>
-      <label><span>Scoreboard time (mss)</span>
-        <input id="g-time" inputmode="numeric" maxlength="3" placeholder="432" autocomplete="off">
-        <span id="g-time-preview" class="sub"></span></label>
+      <label><span>Player number</span>
+        <input id="g-number" inputmode="numeric" maxlength="2" placeholder="__" autocomplete="off"></label>
+      <div>
+        <label><span>Assist (optional)</span>
+          <input id="g-assist" inputmode="numeric" maxlength="2" placeholder="__" autocomplete="off"></label>
+        <button type="button" id="g-no-assist" class="ghost" style="width:100%">No assist</button>
+      </div>
     </div>
+    <label><span>Scoreboard time (m ss, or 000 if unknown)</span>
+      <input id="g-time" inputmode="numeric" maxlength="3" placeholder="___" autocomplete="off">
+      <span id="g-time-preview" class="sub"></span></label>
     <p class="sub" id="g-quarter-note"></p>
     <p class="err" id="g-error"></p>
     <div class="row" style="justify-content:flex-end">
@@ -199,6 +204,7 @@ const QUARTERS = 6;
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pad2 = n => String(n).padStart(2, '0');
 
 // ---------- storage (browser only, wrapped so a blocked store never breaks the page) ----------
 function load() {
@@ -219,14 +225,18 @@ const mmss = s => {
   s = Math.max(0, Math.floor(s));
   return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
 };
-// Goal time is typed as three digits, mss: "432" = 4:32. Returns seconds, or null if invalid.
-function goalTimeSecs(digits) {
+// Goals with an unknown time store secs = null and show as ?:??
+const timeLabel = secs => secs === null ? '?:??' : mmss(secs);
+
+// Goal time is typed as three digits, m then ss: "432" = 4:32, "000" = unknown.
+// Returns { secs } (secs is null when unknown), or null when invalid.
+function parseGoalTime(digits) {
   if (!/^\d{3}$/.test(digits)) return null;
-  const m = +digits[0];
+  if (digits === '000') return { secs: null };
   const s = +digits.slice(1);
   if (s > 59) return null;
-  const secs = m * 60 + s;
-  return secs < quarterLen() ? secs : null;
+  const secs = +digits[0] * 60 + s;
+  return secs < quarterLen() ? { secs } : null;
 }
 
 // ---------- rendering ----------
@@ -259,7 +269,7 @@ function renderScorers() {
   const html = ['left', 'right'].map(side => {
     const counts = {};
     state.goals.filter(g => g.team === side).forEach(g => {
-      const k = g.number === null ? 'no #' : '#' + g.number;
+      const k = g.number === null ? 'no #' : '#' + pad2(g.number);
       counts[k] = (counts[k] || 0) + 1;
     });
     const parts = Object.entries(counts).map(([k, n]) => `${esc(k)}${n > 1 ? ' ×' + n : ''}`);
@@ -268,14 +278,17 @@ function renderScorers() {
   $('#scorers').innerHTML = html.join('');
 }
 
+// Log stays in the order goals were entered within each quarter, so an
+// unknown-time goal keeps its place instead of sinking to the end.
 function renderLog() {
-  const sorted = [...state.goals].sort((a, b) => a.quarter - b.quarter || b.secs - a.secs);
+  const sorted = [...state.goals].sort((a, b) => a.quarter - b.quarter || a.created - b.created);
   $('#log').innerHTML = sorted.length ? sorted.map(g => {
     const t = state.teams[g.team];
-    const num = g.number === null ? 'no #' : '#' + g.number;
+    const num = g.number === null ? 'no #' : '#' + pad2(g.number);
+    const ast = g.assist ? ` <span class="sub">(ast #${pad2(g.assist)})</span>` : '';
     return `<li>
-      <span class="q">Q${g.quarter} · ${mmss(g.secs)}</span>
-      <span class="who"><span class="dot" style="background:${colourDot(t.colour)};margin-right:6px"></span>${esc(t.code)} ${esc(num)}</span>
+      <span class="q">Q${g.quarter} · ${timeLabel(g.secs)}</span>
+      <span class="who"><span class="dot" style="background:${colourDot(t.colour)};margin-right:6px"></span>${esc(t.code)} ${esc(num)}${ast}</span>
       <button data-del="${esc(g.id)}" class="ghost">Delete</button>
     </li>`;
   }).join('') : '<li class="empty">No goals yet.</li>';
@@ -292,12 +305,14 @@ function renderAll() {
 const dlg = $('#goal-dialog');
 
 const numIn = $('#g-number');
+const assistIn = $('#g-assist');
 const timeIn = $('#g-time');
 
 function openGoal(side) {
   $('#goal-form').dataset.team = side;
   $('#g-title').textContent = `${state.teams[side].colour} goal (${state.teams[side].code})`;
   numIn.value = '';
+  assistIn.value = '';
   timeIn.value = '';
   $('#g-time-preview').textContent = '';
   $('#g-error').textContent = '';
@@ -308,21 +323,32 @@ function openGoal(side) {
 
 $('#g-cancel').addEventListener('click', () => dlg.close());
 
-// Digits only in both fields.
-[numIn, timeIn].forEach(el => el.addEventListener('input', () => {
+// Digits only in every field.
+[numIn, assistIn, timeIn].forEach(el => el.addEventListener('input', () => {
   el.value = el.value.replace(/\D/g, '');
 }));
 
-// Second player digit jumps to the time field.
+// Second player digit jumps to the assist field.
 numIn.addEventListener('input', () => {
-  if (numIn.value.length === 2) timeIn.focus();
+  if (numIn.value.length === 2) assistIn.focus();
+});
+
+// Second assist digit jumps to the time field.
+assistIn.addEventListener('input', () => {
+  if (assistIn.value.length === 2) timeIn.focus();
+});
+
+// "No assist" skips straight to the time field.
+$('#g-no-assist').addEventListener('click', () => {
+  assistIn.value = '';
+  timeIn.focus();
 });
 
 // Third time digit saves the goal straight away.
 timeIn.addEventListener('input', () => {
-  const secs = timeIn.value.length === 3 ? goalTimeSecs(timeIn.value) : null;
+  const time = timeIn.value.length === 3 ? parseGoalTime(timeIn.value) : null;
   $('#g-time-preview').textContent = timeIn.value.length === 3
-    ? (secs === null ? 'Not a valid time' : 'Time ' + mmss(secs))
+    ? (time === null ? 'Not a valid time' : time.secs === null ? 'Time unknown' : 'Time ' + mmss(time.secs))
     : '';
   if (timeIn.value.length === 3) $('#goal-form').requestSubmit();
 });
@@ -334,9 +360,14 @@ $('#goal-form').addEventListener('submit', ev => {
     numIn.focus();
     return;
   }
-  const secs = goalTimeSecs(timeIn.value);
-  if (secs === null) {
-    $('#g-error').textContent = 'Time must be 3 digits m-ss, e.g. 432 for 4:32.';
+  if (assistIn.value !== '' && !/^\d{2}$/.test(assistIn.value)) {
+    $('#g-error').textContent = 'Assist must be 2 digits, or tap No assist.';
+    assistIn.focus();
+    return;
+  }
+  const time = parseGoalTime(timeIn.value);
+  if (time === null) {
+    $('#g-error').textContent = 'Time must be 3 digits m-ss, e.g. 432 for 4:32, or 000 if unknown.';
     timeIn.focus();
     return;
   }
@@ -344,8 +375,9 @@ $('#goal-form').addEventListener('submit', ev => {
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
     team: $('#goal-form').dataset.team,
     number: parseInt(numIn.value, 10),
+    assist: assistIn.value === '' ? null : parseInt(assistIn.value, 10),
     quarter: state.quarter,
-    secs,
+    secs: time.secs,
     created: Date.now()
   });
   save();
@@ -359,7 +391,7 @@ $('#r-goal').addEventListener('click', () => openGoal('right'));
 $('#undo').addEventListener('click', () => {
   if (!state.goals.length) return;
   const last = state.goals.reduce((a, b) => (b.created > a.created ? b : a));
-  if (!confirm(`Remove the last goal (Q${last.quarter} ${mmss(last.secs)})?`)) return;
+  if (!confirm(`Remove the last goal (Q${last.quarter} ${timeLabel(last.secs)})?`)) return;
   state.goals = state.goals.filter(g => g.id !== last.id);
   save();
   renderAll();
