@@ -21,7 +21,12 @@ main{flex:1;display:flex;flex-direction:column;align-items:center;justify-conten
   #clock{font-size:clamp(72px,36vh,520px)}
   #period{font-size:clamp(40px,14vh,200px)}
 }
-.stale #clock,.stale #period{color:#5a6070}
+.score{display:flex;align-items:center;justify-content:center;gap:5vw;font-size:clamp(48px,18vw,220px);font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+.score>div{display:flex;flex-direction:column;align-items:center;min-width:2ch}
+.score small{font-size:max(14px,.2em);letter-spacing:.12em;color:var(--dim);font-weight:700}
+.score .sep{color:var(--dim);min-width:0}
+@media (orientation:landscape){.score{font-size:clamp(40px,22vh,220px)}}
+.stale .score span,.stale #clock,.stale #period{color:#5a6070}
 footer{display:flex;align-items:center;justify-content:center;gap:8px;padding:12px 16px;color:var(--dim);font-size:14px}
 .dot{width:10px;height:10px;border-radius:50%;background:var(--dim)}
 .live .dot{background:var(--ok)}
@@ -36,6 +41,11 @@ footer{display:flex;align-items:center;justify-content:center;gap:8px;padding:12
 <main>
   <div id="period">--</div>
   <div id="clock">--:--</div>
+  <div class="score">
+    <div><small>HOME</small><span id="home">-</span></div>
+    <div class="sep">:</div>
+    <div><small>GUEST</small><span id="guest">-</span></div>
+  </div>
 </main>
 <footer><span class="dot"></span><span id="status">Connecting…</span></footer>
 
@@ -119,7 +129,10 @@ function render() {
             e.d.status === "live" && age <= MAX_AGE_MS;
     $("clock").textContent = e.d.clock != null ? e.d.clock : "--:--";
     $("period").textContent = periodLabel(e.d.period);
+    $("home").textContent = e.d.home != null ? e.d.home : "-";
+    $("guest").textContent = e.d.guest != null ? e.d.guest : "-";
   } else {
+    $("home").textContent = $("guest").textContent = "-";
     $("clock").textContent = "--:--";
     $("period").textContent = "--";
   }
