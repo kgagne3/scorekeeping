@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Field Clock</title>
+<style>
+:root{--bg:#0b0d10;--panel:#171a21;--line:#2a2f3a;--text:#f2f4f7;--dim:#8b93a3;--accent:#4f8cff;--ok:#3ccf6e;--warn:#e5a73b}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--text);font:16px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  display:flex;flex-direction:column;min-height:100vh;min-height:100dvh;-webkit-text-size-adjust:100%}
+.tabs{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px 16px}
+.tabs button{padding:14px 0;font-size:18px;font-weight:700;border-radius:10px;border:2px solid var(--line);
+  background:var(--panel);color:var(--dim);cursor:pointer}
+.tabs button[aria-pressed="true"]{border-color:var(--accent);color:var(--text);background:#4f8cff22}
+main{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2vh;padding:0 16px;text-align:center}
+#period{font-size:clamp(48px,16vw,200px);font-weight:800;letter-spacing:.06em;line-height:1}
+#clock{font-size:clamp(72px,30vw,520px);font-weight:800;line-height:1;font-variant-numeric:tabular-nums;white-space:nowrap}
+@media (orientation:landscape){
+  #clock{font-size:clamp(72px,36vh,520px)}
+  #period{font-size:clamp(40px,14vh,200px)}
+}
+.stale #clock,.stale #period{color:#5a6070}
+footer{display:flex;align-items:center;justify-content:center;gap:8px;padding:12px 16px;color:var(--dim);font-size:14px}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--dim)}
+.live .dot{background:var(--ok)}
+.warn .dot{background:var(--warn)}
+</style>
+</head>
+<body class="warn">
+<div class="tabs" role="group" aria-label="Field">
+  <button data-field="1" aria-pressed="true">Field 1</button>
+  <button data-field="2" aria-pressed="false">Field 2</button>
+</div>
+<main>
+  <div id="period">--</div>
+  <div id="clock">--:--</div>
+</main>
+<footer><span class="dot"></span><span id="status">Connecting…</span></footer>
+
+<script>
+"use strict";
+const WS_URL = "wss://apps.playit.pt/socket?app=world-lacrosse-2026";
+const MAP_URL = "https://apps.playit.pt/Sixes-Championships-2026/api/broadcast?stream=";
+// Fallback only; the live mapping is fetched from the operator endpoint (guide says it can change).
+const FALLBACK = { "1": "raspi-score-2", "2": "raspi-score-3" };
+const MAX_AGE_MS = 1500, DISCONNECT_MS = 3000, RECONNECT_MS = 3000;
+
+let field = "1";
+try { field = localStorage.getItem("field") || "1"; } catch (e) {}
+const h = new URLSearchParams(location.search).get("field");
+if (h === "1" || h === "2" || h === "demo") field = h;
+
+const scoreId = { "1": FALLBACK["1"], "2": FALLBACK["2"], demo: "raspi-score-demo" };
+const devices = {};      // id -> {device, localAt}
+const sources = {};      // sourceKey -> {sessionId, sequence, lastAt}
+let socketOpen = false;
+
+const $ = id => document.getElementById(id);
+
+async function refreshMapping() {
+  for (const n of ["1", "2"]) {
+    try {
+      const r = await fetch(MAP_URL + n, { cache: "no-store" });
+      const j = await r.json();
+      const s = j && j.streams && j.streams[n];
+      if (s && s.panelId != null) { const id = String(s.panelId); scoreId[n] = /^\d+$/.test(id) ? "raspi-score-" + id : id; }
+    } catch (e) { /* keep fallback / last known */ }
+  }
+}
+
+function onPayload(p) {
+  const c = p.clocks;
+  if (!c || !Array.isArray(c.devices)) return;
+  const key = c.sourceId || "live";
+  const src = sources[key];
+  if (src && src.sessionId === c.sessionId && c.sequence <= src.sequence) return;
+  const now = performance.now();
+  sources[key] = { sessionId: c.sessionId, sequence: c.sequence, lastAt: now,
+                   ok: c.operating !== false && (c.state || "connected") === "connected" };
+  for (const d of c.devices) {
+    if (d.kind === "clock") devices[d.id] = { d, localAt: now, source: key };
+  }
+}
+
+function connect() {
+  const ws = new WebSocket(WS_URL);
+  ws.addEventListener("open", () => { socketOpen = true; });
+  ws.addEventListener("message", ({ data }) => {
+    try {
+      const m = JSON.parse(data);
+      if (m.type !== "clocks:state" || m.schema !== "playit-clocks-live-v1") return;
+      const bytes = Uint8Array.from(atob(m.payload), ch => ch.charCodeAt(0));
+      const s = JSON.parse(new TextDecoder().decode(bytes));
+      if (s.schema !== "playit-clocks-v2") return;
+      onPayload(s);
+    } catch (e) { /* ignore unrelated or malformed */ }
+  });
+  const retry = () => { socketOpen = false; setTimeout(connect, RECONNECT_MS); };
+  let done = false;
+  ws.addEventListener("close", () => { if (!done) { done = true; retry(); } });
+  ws.addEventListener("error", () => { try { ws.close(); } catch (e) {} });
+}
+
+function periodLabel(p) {
+  if (p == null) return "--";
+  return p > 4 ? "OT" : "Q" + p;
+}
+
+function render() {
+  const now = performance.now();
+  const e = devices[scoreId[field]];
+  let fresh = false;
+  if (e) {
+    const src = sources[e.source];
+    const age = (e.d.ageMs == null ? Infinity : e.d.ageMs) + (now - e.localAt);
+    fresh = socketOpen && src && src.ok && now - src.lastAt <= DISCONNECT_MS &&
+            e.d.status === "live" && age <= MAX_AGE_MS;
+    $("clock").textContent = e.d.clock != null ? e.d.clock : "--:--";
+    $("period").textContent = periodLabel(e.d.period);
+  } else {
+    $("clock").textContent = "--:--";
+    $("period").textContent = "--";
+  }
+  document.body.classList.toggle("stale", !fresh);
+  document.body.classList.toggle("live", fresh);
+  document.body.classList.toggle("warn", !fresh);
+  $("status").textContent = fresh ? "Live"
+    : !socketOpen ? "Connecting…"
+    : e ? "No live reading — showing last value" : "Waiting for field data…";
+}
+
+function setField(f) {
+  field = f;
+  try { localStorage.setItem("field", f); } catch (e) {}
+  document.querySelectorAll(".tabs button").forEach(b =>
+    b.setAttribute("aria-pressed", String(b.dataset.field === f)));
+  render();
+}
+document.querySelectorAll(".tabs button").forEach(b =>
+  b.addEventListener("click", () => setField(b.dataset.field)));
+
+setField(field);
+refreshMapping();
+setInterval(refreshMapping, 60000);
+connect();
+setInterval(render, 100);
+</script>
+</body>
+</html>
